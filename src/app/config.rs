@@ -22,6 +22,8 @@ fn default_true() -> bool {
 pub struct PartyConfig {
     #[serde(default = "default_true")]
     pub enable_kwin_script: bool,
+    #[serde(default)]
+    pub enable_hyprland_windows: bool,
     #[serde(default = "default_true")]
     pub gamescope_fix_lowres: bool,
     #[serde(default = "default_true")]
@@ -54,6 +56,7 @@ impl Default for PartyConfig {
     fn default() -> Self {
         PartyConfig {
             enable_kwin_script: true,
+            enable_hyprland_windows: false,
             gamescope_fix_lowres: true,
             gamescope_sdl_backend: true,
             gamescope_force_grab_cursor: false,

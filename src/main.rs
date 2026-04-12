@@ -1,5 +1,6 @@
 mod app;
 mod handler;
+mod hyprland;
 mod input;
 mod instance;
 mod launch;

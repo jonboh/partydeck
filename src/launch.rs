@@ -3,6 +3,7 @@ use std::process::Command;
 
 use crate::app::{PartyConfig, PadFilterType};
 use crate::handler::*;
+use crate::hyprland::hyprland_start;
 use crate::input::*;
 use crate::instance::*;
 use crate::paths::*;
@@ -48,6 +49,17 @@ pub fn launch_game(
         kwin_dbus_start_script(PATH_RES.join(script)).map_err(|e| format!("Failed to start KWin script: {}", e))?;
     }
 
+    let hyprland_handle = if cfg.enable_hyprland_windows {
+        // Start the Hyprland daemon before any game processes are spawned so it is
+        // ready to handle the first openwindow event.
+        Some(
+            hyprland_start(cfg.vertical_two_player)
+                .map_err(|e| format!("Failed to start Hyprland: {}", e))?,
+        )
+    } else {
+        None
+    };
+
     let sleep_time = match h.pause_between_starts {
         Some(f) => f,
         None => 0.5,
@@ -70,6 +82,10 @@ pub fn launch_game(
 
     for mut handle in handles {
         handle.wait()?;
+    }
+
+    if let Some(handle) = hyprland_handle {
+        handle.stop();
     }
 
     Ok(())

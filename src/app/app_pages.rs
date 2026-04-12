@@ -499,6 +499,14 @@ impl PartyApp {
             self.infotext = "DEFAULT: Enabled\n\n Resizes/repositions instances to fit the screen using a KWin script. If using a desktop environment or window manager other than KDE Plasma, uncheck this; note that you will need to manually resize and reposition the windows.".to_string();
         }
 
+        let enable_hyprland_check = ui.checkbox(
+            &mut self.options.enable_hyprland_windows,
+            "(Hyprland) Automatically resize/reposition instances",
+        );
+        if enable_hyprland_check.hovered() {
+            self.infotext = "DEFAULT: Disabled\n\nResizes/repositions instances to fit the screen using Hyprland IPC. Enable this when running on Hyprland. Requires hyprctl to be in PATH.".to_string();
+        }
+
         ui.horizontal(|ui| {
             let split_style_label = ui.label("Split style");
             let r1 = ui.radio_value(
