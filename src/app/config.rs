@@ -50,6 +50,8 @@ pub struct PartyConfig {
     pub disable_mount_gamedirs: bool,
     #[serde(default)]
     pub check_for_updates: bool,
+    #[serde(default)]
+    pub default_profiles: Vec<String>,
 }
 
 impl Default for PartyConfig {
@@ -70,6 +72,7 @@ impl Default for PartyConfig {
             profile_unique_dirs: true,
             disable_mount_gamedirs: false,
             check_for_updates: true,
+            default_profiles: Vec::new(),
         }
     }
 }

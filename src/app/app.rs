@@ -307,10 +307,15 @@ impl PartyApp {
                             }
                         }
                         None => {
+                            let inst_idx = self.instances.len();
+                            let profselection = self.options.default_profiles
+                                .get(inst_idx)
+                                .and_then(|name| self.profiles.iter().position(|p| p == name))
+                                .unwrap_or(0);
                             self.instances.push(Instance {
                                 devices: vec![i],
                                 profname: String::new(),
-                                profselection: 0,
+                                profselection,
                                 monitor: 0,
                                 width: 0,
                                 height: 0,

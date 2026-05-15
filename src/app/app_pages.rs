@@ -219,8 +219,8 @@ impl PartyApp {
             ui.label("Executable:");
             ui.add_enabled(false, egui::TextEdit::singleline(&mut h.exec));
             if ui.button("🗁").clicked() {
-                if let Ok(base_path) = h.get_game_rootpath()
-                    && let Ok(path) = file_dialog_relative(&PathBuf::from(base_path))
+                if let Ok(base_path) = dbg!(h.get_game_rootpath())
+                    && let Ok(path) = dbg!(file_dialog_relative(&PathBuf::from(base_path)))
                 {
                     h.exec = path.to_string_lossy().to_string();
                 }
@@ -578,6 +578,41 @@ impl PartyApp {
         );
         if disable_mount_gamedirs_check.hovered() {
             self.infotext = "DEFAULT: Disabled\n\nBy default, PartyDeck mounts game directories using fuse-overlayfs to let each instance write to the game's directory without conflicting with each other or affecting the game's installation. In addition, this lets handlers overlay content like mods or config files onto the game directory. Enabling this forces instances to launch from the original game directory without mounting, which will prevent handlers from using built-in mods, but may be useful for diagnosing issues.".to_string();
+        }
+
+        ui.separator();
+
+        ui.label("Default profiles (assigned in order when controllers join):");
+        ui.horizontal_wrapped(|ui| {
+            let available_profiles = scan_profiles(false);
+            let mut to_remove: Option<usize> = None;
+            for (idx, prof) in self.options.default_profiles.iter().enumerate() {
+                ui.label(format!("P{}:", idx + 1));
+                if ui.button(prof).on_hover_text("Click to remove").clicked() {
+                    to_remove = Some(idx);
+                }
+            }
+            if let Some(idx) = to_remove {
+                self.options.default_profiles.remove(idx);
+            }
+            if available_profiles.is_empty() {
+                ui.label("(no profiles)");
+            } else {
+                egui::ComboBox::from_id_salt("add_default_profile")
+                    .selected_text("+ Add")
+                    .show_ui(ui, |ui| {
+                        for prof in &available_profiles {
+                            if ui.selectable_label(false, prof).clicked() {
+                                self.options.default_profiles.push(prof.clone());
+                            }
+                        }
+                    });
+            }
+        });
+        if !self.options.default_profiles.is_empty() {
+            if ui.small_button("Clear defaults").clicked() {
+                self.options.default_profiles.clear();
+            }
         }
 
         ui.separator();
