@@ -35,7 +35,7 @@ pub fn dir_dialog() -> Result<PathBuf, Box<dyn Error>> {
 pub fn file_dialog_relative(base_dir: &PathBuf) -> Result<PathBuf, Box<dyn Error>> {
     let file = FileDialog::new()
         .set_title("Select File")
-        .set_directory(base_dir)
+        // .set_directory(base_dir) // directories with spaces are not handled correctly
         .pick_file()
         .ok_or_else(|| "No file selected")?;
 

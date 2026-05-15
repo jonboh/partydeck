@@ -144,6 +144,12 @@ pub fn launch_cmds(
         .map(|_| Command::new(gamescope))
         .collect();
 
+    // On NixOS, pressure-vessel expects a standard FHS layout (/usr/bin/true,
+    // /var/cache/ldconfig, etc.) that doesn't exist by default. If steam-run is
+    // available, wrap the bwrap invocation inside it so the whole subtree runs
+    // inside a proper FHS environment.
+    let steam_run = pathsearch::find_executable_in_path("steam-run");
+
     for (i, instance) in instances.iter().enumerate() {
         let gamedir =
             if h.is_saved_handler() && !cfg.disable_mount_gamedirs && cfg.profile_unique_dirs {
@@ -262,6 +268,9 @@ pub fn launch_cmds(
         cmd.arg("--");
 
         // Bwrap args
+        if let Some(ref sr) = steam_run {
+            cmd.arg(sr);
+        }
         cmd.arg("bwrap");
         cmd.arg("--die-with-parent");
         cmd.args(["--dev-bind", "/", "/"]);
