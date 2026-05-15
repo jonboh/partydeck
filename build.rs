@@ -2,10 +2,14 @@ use std::fs;
 use std::path::Path;
 
 #[cfg(all(not(feature = "download_deps_latest"), feature = "download_deps"))]
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 #[cfg(feature = "download_deps")]
-enum ArchFmt { TarBz2, Tar, SevenZ }
+enum ArchFmt {
+    TarBz2,
+    Tar,
+    SevenZ,
+}
 
 #[cfg(feature = "download_deps")]
 struct Dep {
@@ -17,7 +21,7 @@ struct Dep {
     static_url: &'static str,
     #[allow(dead_code)]
     static_hash: &'static str,
-    marker: &'static str,       // skip download if this exists
+    marker: &'static str,              // skip download if this exists
     rename_from: Option<&'static str>, // gbe extracts to "release/", rename it
 }
 
@@ -58,24 +62,45 @@ const DEPS: &[Dep] = &[
 // (src relative to project root, dst relative to target dir)
 const BUNDLE: &[(&str, &str)] = &[
     // goldberg linux
-    ("deps/releases/gbe-linux/regular/x64/steamclient.so", "res/goldberg/linux64/steamclient.so"),
-    ("deps/releases/gbe-linux/regular/x32/steamclient.so", "res/goldberg/linux32/steamclient.so"),
+    (
+        "deps/releases/gbe-linux/regular/x64/steamclient.so",
+        "res/goldberg/linux64/steamclient.so",
+    ),
+    (
+        "deps/releases/gbe-linux/regular/x32/steamclient.so",
+        "res/goldberg/linux32/steamclient.so",
+    ),
     // goldberg windows
-    ("deps/releases/gbe-win/steamclient_experimental/steamclient.dll", "res/goldberg/win/steamclient.dll"),
-    ("deps/releases/gbe-win/steamclient_experimental/steamclient64.dll", "res/goldberg/win/steamclient64.dll"),
-    ("deps/releases/gbe-win/steamclient_experimental/GameOverlayRenderer.dll", "res/goldberg/win/GameOverlayRenderer.dll"),
-    ("deps/releases/gbe-win/steamclient_experimental/GameOverlayRenderer64.dll", "res/goldberg/win/GameOverlayRenderer64.dll"),
+    (
+        "deps/releases/gbe-win/steamclient_experimental/steamclient.dll",
+        "res/goldberg/win/steamclient.dll",
+    ),
+    (
+        "deps/releases/gbe-win/steamclient_experimental/steamclient64.dll",
+        "res/goldberg/win/steamclient64.dll",
+    ),
+    (
+        "deps/releases/gbe-win/steamclient_experimental/GameOverlayRenderer.dll",
+        "res/goldberg/win/GameOverlayRenderer.dll",
+    ),
+    (
+        "deps/releases/gbe-win/steamclient_experimental/GameOverlayRenderer64.dll",
+        "res/goldberg/win/GameOverlayRenderer64.dll",
+    ),
     // umu
     ("deps/releases/umu/umu-run", "bin/umu-run"),
     // resources
     ("res/splitscreen_kwin.js", "res/splitscreen_kwin.js"),
-    ("res/splitscreen_kwin_vertical.js", "res/splitscreen_kwin_vertical.js"),
+    (
+        "res/splitscreen_kwin_vertical.js",
+        "res/splitscreen_kwin_vertical.js",
+    ),
 ];
 
-const BUNDLE_OPTIONAL: &[(&str, &str)] = &[
-    ("deps/gamescope/build-gcc/src/gamescope", "bin/gamescope-kbm"),
-];
-
+const BUNDLE_OPTIONAL: &[(&str, &str)] = &[(
+    "deps/gamescope/build-gcc/src/gamescope",
+    "bin/gamescope-kbm",
+)];
 
 macro_rules! build_println {
     ($($arg:tt)*) => {
@@ -100,10 +125,14 @@ fn main() {
     #[cfg(feature = "download_deps")]
     for dep in DEPS {
         let releases_dir = deps_dir.join("releases/");
-        fs::create_dir_all(&releases_dir).expect(&format!("failed to create directory: {:?}", releases_dir));
+        fs::create_dir_all(&releases_dir)
+            .expect(&format!("failed to create directory: {:?}", releases_dir));
 
         fetch_dep(&releases_dir, dep).unwrap_or_else(|e| {
-            panic!("failed to fetch {} from {}: {e}", dep.asset_contains, dep.repo);
+            panic!(
+                "failed to fetch {} from {}: {e}",
+                dep.asset_contains, dep.repo
+            );
         });
     }
 
@@ -112,7 +141,10 @@ fn main() {
 
     // cargo puts OUT_DIR a few levels deep, walk up to the profile dir (target/release/)
     let target_dir = Path::new(&std::env::var("OUT_DIR").unwrap())
-        .ancestors().nth(3).unwrap().to_path_buf();
+        .ancestors()
+        .nth(3)
+        .unwrap()
+        .to_path_buf();
 
     for &(src, dst) in BUNDLE {
         let from = root.join(src);
@@ -124,7 +156,10 @@ fn main() {
                 0
             });
         } else {
-            build_println!("Build skipping copying file {} due to it being inaccessable or not downloaded.", from.display());
+            build_println!(
+                "Build skipping copying file {} due to it being inaccessable or not downloaded.",
+                from.display()
+            );
         }
     }
 
@@ -141,7 +176,7 @@ fn main() {
 #[cfg(feature = "build_gamescope")]
 fn build_gamescope(deps_dir: &Path) {
     apply_patches(deps_dir); // Apply our own custom fixes for gamescope compilation
-    
+
     use std::process::Command;
 
     let gamescope_dir = deps_dir.join("gamescope");
@@ -172,7 +207,6 @@ fn build_gamescope(deps_dir: &Path) {
     assert!(status.success(), "ninja build failed for gamescope");
 }
 
-
 #[cfg(all(not(feature = "download_deps_latest"), feature = "download_deps"))]
 fn get_file_hash(file_path: &Path) -> String {
     let mut f = fs::File::open(file_path).unwrap();
@@ -181,13 +215,15 @@ fn get_file_hash(file_path: &Path) -> String {
     let mut buf = [0u8; 8192];
 
     while let Ok(n) = std::io::Read::read(&mut f, &mut buf) {
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         h.update(&buf[..n]);
     }
 
     let hash = h.finalize();
     let hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
-    
+
     hex
 }
 
@@ -237,21 +273,30 @@ fn fetch_dep(releases_dir: &Path, dep: &Dep) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-#[cfg(feature = "download_deps_latest")] 
-fn find_release_asset(repo: &str, name_contains: &str) -> Result<String, Box<dyn std::error::Error>> {
+#[cfg(feature = "download_deps_latest")]
+fn find_release_asset(
+    repo: &str,
+    name_contains: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
     let client = reqwest::blocking::Client::new();
     build_println!("Downloading latest release URL for {repo}...");
 
     let resp: serde_json::Value = client
-        .get(format!("https://api.github.com/repos/{repo}/releases/latest"))
+        .get(format!(
+            "https://api.github.com/repos/{repo}/releases/latest"
+        ))
         .header("User-Agent", "partydeck-build")
-        .send()?.error_for_status()?.json()?;
+        .send()?
+        .error_for_status()?
+        .json()?;
 
     for asset in resp["assets"].as_array().ok_or("no assets in release")? {
         let name = asset["name"].as_str().unwrap_or("");
         if name.contains(name_contains) {
-            return Ok(asset["browser_download_url"].as_str()
-                .ok_or("missing download url")?.to_string());
+            return Ok(asset["browser_download_url"]
+                .as_str()
+                .ok_or("missing download url")?
+                .to_string());
         }
     }
     Err(format!("no asset matching '{name_contains}' in {repo}").into())
@@ -261,11 +306,16 @@ fn find_release_asset(repo: &str, name_contains: &str) -> Result<String, Box<dyn
 fn download(url: &str, dest: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::blocking::Client::new();
 
-    build_println!("Downloading latest release from {url} to file: {:?}...", dest);
+    build_println!(
+        "Downloading latest release from {url} to file: {:?}...",
+        dest
+    );
 
-    let mut resp = client.get(url)
+    let mut resp = client
+        .get(url)
         .header("User-Agent", "partydeck-build")
-        .send()?.error_for_status()?;
+        .send()?
+        .error_for_status()?;
     let mut file = fs::File::create(dest)?;
     std::io::copy(&mut resp, &mut file)?;
     Ok(())

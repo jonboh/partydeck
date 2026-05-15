@@ -1,7 +1,6 @@
 use x11rb::connection::Connection;
 use x11rb::protocol::randr::ConnectionExt as _;
 
-
 #[derive(Clone)]
 pub struct Monitor {
     name: String,
@@ -30,14 +29,9 @@ fn get_monitors_x11() -> Result<Vec<Monitor>, Box<dyn std::error::Error>> {
     let screen = &con.setup().roots[screen_num];
 
     // Get primary output (sorted first in sdl, but as sdl comments say, this should be done already.)
-    let primary = con
-        .randr_get_output_primary(screen.root)?
-        .reply()?
-        .output;
+    let primary = con.randr_get_output_primary(screen.root)?.reply()?.output;
 
-    let res = con
-        .randr_get_screen_resources(screen.root)?
-        .reply()?;
+    let res = con.randr_get_screen_resources(screen.root)?.reply()?;
 
     let mut monitors = Vec::new();
 
@@ -81,7 +75,14 @@ pub fn get_x11_dpi_scale() -> f32 {
     };
     let root = conn.setup().roots[screen_num].root;
 
-    let Ok(cookie) = conn.get_property(false, root, AtomEnum::RESOURCE_MANAGER, AtomEnum::STRING, 0, 65536) else {
+    let Ok(cookie) = conn.get_property(
+        false,
+        root,
+        AtomEnum::RESOURCE_MANAGER,
+        AtomEnum::STRING,
+        0,
+        65536,
+    ) else {
         return 1.0;
     };
     let Ok(reply) = cookie.reply() else {
@@ -92,7 +93,9 @@ pub fn get_x11_dpi_scale() -> f32 {
     for line in rm_string.lines() {
         if let Some(rest) = line.strip_prefix("Xft.dpi:") {
             if let Ok(dpi) = rest.trim().parse::<f32>() {
-                if dpi > 0.0 { return dpi / 96.0; }
+                if dpi > 0.0 {
+                    return dpi / 96.0;
+                }
             }
         }
     }
@@ -107,12 +110,20 @@ pub fn get_monitors_errorless() -> Vec<Monitor> {
         monitors = ret_monitors;
     }
 
-    if monitors.len() == 0 { // Quick patch for those who have no x11 visable monitors, so we dont just panic.
+    if monitors.len() == 0 {
+        // Quick patch for those who have no x11 visable monitors, so we dont just panic.
         println!("[PARTYDECK] Failed to get monitors; using assumed 1920x1080");
-        monitors.push(Monitor {name: "Partydeck Virtual Monitor".to_string(), width: 1920, height: 1080});
+        monitors.push(Monitor {
+            name: "Partydeck Virtual Monitor".to_string(),
+            width: 1920,
+            height: 1080,
+        });
     }
 
-    if let (Ok(w), Ok(h)) = (std::env::var("PARTYDECK_SCREEN_WIDTH"), std::env::var("PARTYDECK_SCREEN_HEIGHT")) {
+    if let (Ok(w), Ok(h)) = (
+        std::env::var("PARTYDECK_SCREEN_WIDTH"),
+        std::env::var("PARTYDECK_SCREEN_HEIGHT"),
+    ) {
         if let (Ok(w), Ok(h)) = (w.parse::<u32>(), h.parse::<u32>()) {
             monitors[0].width = w;
             monitors[0].height = h;

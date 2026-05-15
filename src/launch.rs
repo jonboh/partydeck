@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::app::{PartyConfig, PadFilterType};
+use crate::app::{PadFilterType, PartyConfig};
 use crate::handler::*;
 use crate::hyprland::hyprland_start;
 use crate::input::*;
@@ -46,7 +46,8 @@ pub fn launch_game(
             false => "splitscreen_kwin.js",
         };
 
-        kwin_dbus_start_script(PATH_RES.join(script)).map_err(|e| format!("Failed to start KWin script: {}", e))?;
+        kwin_dbus_start_script(PATH_RES.join(script))
+            .map_err(|e| format!("Failed to start KWin script: {}", e))?;
     }
 
     let hyprland_handle = if cfg.enable_hyprland_windows {
@@ -70,7 +71,11 @@ pub fn launch_game(
     let mut i = 0;
     for mut cmd in new_cmds {
         let handle = cmd.spawn().map_err(|e| {
-            format!("Failed to start '{}': {}", cmd.get_program().to_string_lossy(), e)
+            format!(
+                "Failed to start '{}': {}",
+                cmd.get_program().to_string_lossy(),
+                e
+            )
         })?;
         handles.push(handle);
 
@@ -106,7 +111,9 @@ pub fn launch_cmds(
     };
 
     if cfg.kbm_support && !gamescope.exists() {
-        return Err("gamescope-kbm is missing. Please reinstall partydeck or disable KBM support.".into());
+        return Err(
+            "gamescope-kbm is missing. Please reinstall partydeck or disable KBM support.".into(),
+        );
     }
 
     if !cfg.kbm_support && pathsearch::find_executable_in_path("gamescope").is_none() {
@@ -119,10 +126,16 @@ pub fn launch_cmds(
                 .join("steam/steamapps/common/SteamLinuxRuntime_soldier")
                 .exists())
         || (runtime == "sniper"
-            && !PATH_STEAM.join("steam/steamapps/common/SteamLinuxRuntime_sniper").exists()
-            && !PATH_STEAM.join("steam/steamapps/common/SteamLinuxRuntime_sniper-arm64").exists())
+            && !PATH_STEAM
+                .join("steam/steamapps/common/SteamLinuxRuntime_sniper")
+                .exists()
+            && !PATH_STEAM
+                .join("steam/steamapps/common/SteamLinuxRuntime_sniper-arm64")
+                .exists())
         || (runtime == "steamrt4"
-            && !PATH_STEAM.join("steam/steamapps/common/SteamLinuxRuntime_4").exists())
+            && !PATH_STEAM
+                .join("steam/steamapps/common/SteamLinuxRuntime_4")
+                .exists())
     {
         return Err(format!("Steam Runtime {runtime} not found! Runtime must be installed on the same drive that the Steam client is installed on.").into());
     }
@@ -132,11 +145,12 @@ pub fn launch_cmds(
         .collect();
 
     for (i, instance) in instances.iter().enumerate() {
-        let gamedir = if h.is_saved_handler() && !cfg.disable_mount_gamedirs && cfg.profile_unique_dirs {
-            PATH_PARTY.join("tmp").join(format!("game-{}", i))
-        } else {
-            PathBuf::from(h.get_game_rootpath()?)
-        };
+        let gamedir =
+            if h.is_saved_handler() && !cfg.disable_mount_gamedirs && cfg.profile_unique_dirs {
+                PATH_PARTY.join("tmp").join(format!("game-{}", i))
+            } else {
+                PathBuf::from(h.get_game_rootpath()?)
+            };
 
         if !gamedir.join(exec).exists() {
             return Err(format!("Executable not found: {}", gamedir.join(exec).display()).into());
@@ -187,7 +201,10 @@ pub fn launch_cmds(
             cmd.env("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD", "1");
         }
         if cfg.pad_filter_type == PadFilterType::OnlySteamInput {
-            cmd.env("SDL_GAMECONTROLLER_IGNORE_DEVICES", SDL_GAMECONTROLLER_IGNORE_DEVICES);
+            cmd.env(
+                "SDL_GAMECONTROLLER_IGNORE_DEVICES",
+                SDL_GAMECONTROLLER_IGNORE_DEVICES,
+            );
         }
         if !h.env.is_empty() {
             for env_var in h.env.split_whitespace() {
@@ -302,18 +319,16 @@ pub fn launch_cmds(
                 cmd.env("SteamGameId", &appid.to_string());
             }
 
-            let sdk32_link = std::fs::read_link(PATH_STEAM.join("sdk32")).map_err(|e| format!("Failed to read sdk32 link: {}", e))?;
-            let sdk64_link = std::fs::read_link(PATH_STEAM.join("sdk64")).map_err(|e| format!("Failed to read sdk64 link: {}", e))?;
+            let sdk32_link = std::fs::read_link(PATH_STEAM.join("sdk32"))
+                .map_err(|e| format!("Failed to read sdk32 link: {}", e))?;
+            let sdk64_link = std::fs::read_link(PATH_STEAM.join("sdk64"))
+                .map_err(|e| format!("Failed to read sdk64 link: {}", e))?;
 
-            cmd.arg("--bind").args([
-                PATH_RES.join("goldberg/linux32"),
-                sdk32_link,
-            ]);
+            cmd.arg("--bind")
+                .args([PATH_RES.join("goldberg/linux32"), sdk32_link]);
 
-            cmd.arg("--bind").args([
-                PATH_RES.join("goldberg/linux64"),
-                sdk64_link,
-            ]);
+            cmd.arg("--bind")
+                .args([PATH_RES.join("goldberg/linux64"), sdk64_link]);
 
             if win {
                 cmd.arg("--bind").args([
@@ -340,9 +355,8 @@ pub fn launch_cmds(
                     cmd.arg("--");
                 }
                 "sniper" => {
-                    let sniper_path = PATH_STEAM.join(
-                        "steam/steamapps/common/SteamLinuxRuntime_sniper/_v2-entry-point",
-                    );
+                    let sniper_path = PATH_STEAM
+                        .join("steam/steamapps/common/SteamLinuxRuntime_sniper/_v2-entry-point");
                     // old installations of sniper go in a folder named -arm64 even though it is x86_64?
                     let sniper_arm_path = PATH_STEAM.join(
                         "steam/steamapps/common/SteamLinuxRuntime_sniper-arm64/_v2-entry-point",
@@ -356,9 +370,8 @@ pub fn launch_cmds(
                 }
                 "steamrt4" => {
                     cmd.arg(
-                        PATH_STEAM.join(
-                            "steam/steamapps/common/SteamLinuxRuntime_4/_v2-entry-point",
-                        ),
+                        PATH_STEAM
+                            .join("steam/steamapps/common/SteamLinuxRuntime_4/_v2-entry-point"),
                     );
                     cmd.arg("--");
                 }

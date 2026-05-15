@@ -1,5 +1,5 @@
-use crate::monitor::Monitor;
 use crate::app::PartyConfig;
+use crate::monitor::Monitor;
 use crate::profiles::GUEST_NAMES;
 
 #[derive(Clone)]
