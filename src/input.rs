@@ -143,12 +143,11 @@ impl InputDevice {
 pub fn scan_input_devices(filter: &PadFilterType) -> Vec<InputDevice> {
     let mut pads: Vec<InputDevice> = Vec::new();
     for dev in evdev::enumerate() {
-        // Skip virtual/loopback devices (no physical path = uinput-created, including our own)
-        if let Some(phys) = dev.1.physical_path() {
-            if phys.is_empty() {
-                continue;
-            }
-        } else {
+        // Skip our own partydeck virtual devices (identified by name prefix).
+        // We intentionally do NOT filter on physical_path alone, because third-party
+        // virtual controllers (e.g. Sunshine streaming) also lack a physical path and
+        // must be allowed through.
+        if dev.1.name().map_or(false, |n| n.starts_with("partydeck ")) {
             continue;
         }
 
@@ -458,7 +457,8 @@ impl InputRouter {
         let phys_dev = Device::open(phys_path)?;
         let mut builder = uinput::VirtualDevice::builder()?;
 
-        builder = builder.name(phys_dev.name().unwrap_or("Virtual Gamepad"));
+        let vdev_name = format!("partydeck {}", phys_dev.name().unwrap_or("Virtual Gamepad"));
+        builder = builder.name(&vdev_name);
         builder = builder.input_id(phys_dev.input_id());
 
         if let Some(keys) = phys_dev.supported_keys() {
