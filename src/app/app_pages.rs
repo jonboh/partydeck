@@ -12,6 +12,7 @@ use eframe::egui::RichText;
 use eframe::egui::{self, Ui};
 use rfd::FileDialog;
 use std::path::PathBuf;
+use std::process::Command;
 
 macro_rules! cur_handler {
     ($self:expr) => {
@@ -484,6 +485,91 @@ impl PartyApp {
                 ui.separator();
             });
         }
+    }
+
+    pub fn display_page_active(&mut self, ui: &mut Ui) {
+        ui.heading("Active Games - Controller Management");
+        ui.separator();
+
+        if self.running_processes.is_empty() {
+            ui.label("No games currently running.");
+            if ui.button("Back").clicked() {
+                self.cur_page = MenuPage::Home;
+            }
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            if ui.button("Back").clicked() {
+                self.cur_page = MenuPage::Home;
+            }
+            ui.separator();
+            if ui.button("Scan for Controllers").clicked() {
+                self.input_devices = scan_input_devices(&self.options.pad_filter_type);
+            }
+            ui.label(format!("Running processes: {}", self.running_processes.len()));
+        });
+
+        ui.separator();
+
+        let mut slots = self.router.slots.lock().unwrap();
+
+        if slots.is_empty() {
+            ui.label("No virtual controller slots active (did the instances use gamepads?).");
+        }
+
+        for (i, slot) in slots.iter_mut().enumerate() {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("Instance {} Controller:", i + 1)).strong());
+
+                    let combo_label = if let Some(path) = &slot.physical_path {
+                        if let Some(device) = self.input_devices.iter().find(|d| d.path() == path) {
+                            format!("{} {} ({})", device.emoji(), device.fancyname(), path.trim_start_matches("/dev/input/"))
+                        } else {
+                            format!("⚠ Disconnected ({})", path.trim_start_matches("/dev/input/"))
+                        }
+                    } else {
+                        "Not Assigned".to_string()
+                    };
+
+                    egui::ComboBox::from_id_salt(format!("reassign_combo_{}", i))
+                        .selected_text(combo_label)
+                        .width(300.0)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(slot.physical_path.is_none(), "None (Disconnect)").clicked() {
+                                slot.physical_path = None;
+                            }
+                            ui.separator();
+                            for dev in self.input_devices.iter() {
+                                if dev.device_type() != DeviceType::Gamepad {
+                                    continue;
+                                }
+                                let is_selected = slot.physical_path.as_deref() == Some(dev.path());
+                                let label = format!("{} {} ({})", dev.emoji(), dev.fancyname(), dev.path().trim_start_matches("/dev/input/"));
+                                if ui.selectable_label(is_selected, label).clicked() {
+                                    slot.physical_path = Some(dev.path().to_string());
+                                }
+                            }
+                        });
+                });
+            });
+        }
+
+        drop(slots);
+
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Stop All Games").clicked() {
+                    if yesno("Stop Games?", "Are you sure you want to kill all running game processes?") {
+                        for &pid in &self.running_processes {
+                            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+                        }
+                    }
+                }
+            });
+            ui.separator();
+        });
     }
 
     pub fn display_settings_general(&mut self, ui: &mut Ui) {

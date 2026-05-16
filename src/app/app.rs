@@ -1,5 +1,6 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::thread::sleep;
 
 use super::config::*;
@@ -13,7 +14,7 @@ use crate::util::*;
 
 use eframe::egui::{self, Key};
 
-#[derive(Eq, PartialEq)]
+#[derive(Eq, PartialEq, Clone, Copy)]
 pub enum MenuPage {
     Home,
     Settings,
@@ -21,6 +22,7 @@ pub enum MenuPage {
     EditHandler,
     Game,
     Instances,
+    Active,
 }
 
 #[derive(Eq, PartialEq)]
@@ -53,6 +55,13 @@ pub struct PartyApp {
     pub loading_since: Option<std::time::Instant>,
     #[allow(dead_code)]
     pub task: Option<std::thread::JoinHandle<()>>,
+
+    pub running_processes: Vec<u32>,
+    pub tx: Sender<Vec<std::process::Child>>,
+    pub rx: Receiver<Vec<std::process::Child>>,
+    pub exit_tx: Sender<u32>,
+    pub exit_rx: Receiver<u32>,
+    pub router: InputRouter,
 }
 
 macro_rules! cur_handler {
@@ -74,6 +83,9 @@ impl PartyApp {
             None => MenuPage::Home,
         };
 
+        let (tx, rx) = channel();
+        let (exit_tx, exit_rx) = channel();
+
         let mut app = Self {
             installed_steamapps: get_installed_steamapps(),
             needs_update: Arc::new(AtomicBool::new(false)),
@@ -93,6 +105,12 @@ impl PartyApp {
             loading_msg: None,
             loading_since: None,
             task: None,
+            running_processes: Vec::new(),
+            tx,
+            rx,
+            exit_tx,
+            exit_rx,
+            router: InputRouter::new(),
         };
 
         if app.options.check_for_updates {
@@ -164,6 +182,7 @@ impl eframe::App for PartyApp {
                 MenuPage::EditHandler => self.display_page_edit_handler(ui),
                 MenuPage::Game => self.display_page_game(ui),
                 MenuPage::Instances => self.display_page_instances(ui),
+                MenuPage::Active => self.display_page_active(ui),
             }
         });
 
@@ -176,6 +195,34 @@ impl eframe::App for PartyApp {
                 self.task = Some(handle);
             }
         }
+
+        // Receive new process handles from the launch thread; spawn a watcher per child
+        while let Ok(handles) = self.rx.try_recv() {
+            for mut child in handles {
+                let pid = child.id();
+                self.running_processes.push(pid);
+
+                let exit_tx = self.exit_tx.clone();
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                    let _ = exit_tx.send(pid);
+                    ctx.request_repaint();
+                });
+            }
+            self.cur_page = MenuPage::Active;
+        }
+
+        // Handle process exit events
+        let mut exited = false;
+        while let Ok(pid) = self.exit_rx.try_recv() {
+            self.running_processes.retain(|&p| p != pid);
+            exited = true;
+        }
+        if exited && self.running_processes.is_empty() {
+            self.cleanup_after_game();
+        }
+
         if let Some(start) = self.loading_since {
             if start.elapsed() > std::time::Duration::from_secs(60) {
                 // Give up waiting after one minute
@@ -200,13 +247,37 @@ impl eframe::App for PartyApp {
                         });
                 });
         }
-        if ctx.input(|input| input.focused) {
+        if ctx.input(|input| input.focused) || !self.running_processes.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(33)); // 30 fps
         }
     }
 }
 
 impl PartyApp {
+    pub fn cleanup_after_game(&mut self) {
+        // Stop the routing thread and release all exclusive device grabs so
+        // controllers become usable again for the next session.
+        self.router.stop_routing();
+        self.router.slots.lock().unwrap().clear();
+
+        if self.options.enable_kwin_script {
+            if let Err(err) = kwin_dbus_unload_script() {
+                println!("[partydeck] Error unloading KWin script: {}", err);
+            }
+        }
+        if let Err(err) = remove_guest_profiles() {
+            println!("[partydeck] Error removing guest profiles: {}", err);
+        }
+        if let Err(err) = clear_tmp() {
+            println!("[partydeck] Error clearing tmp directory: {}", err);
+        }
+        if self.handler_lite.is_some() {
+            self.cur_page = MenuPage::Instances;
+        } else {
+            self.cur_page = MenuPage::Home;
+        }
+    }
+
     pub fn spawn_task<F>(&mut self, msg: &str, f: F)
     where
         F: FnOnce() + Send + 'static,
@@ -308,7 +379,9 @@ impl PartyApp {
                         }
                         None => {
                             let inst_idx = self.instances.len();
-                            let profselection = self.options.default_profiles
+                            let profselection = self
+                                .options
+                                .default_profiles
                                 .get(inst_idx)
                                 .and_then(|name| self.profiles.iter().position(|p| p == name))
                                 .unwrap_or(0);
@@ -436,43 +509,28 @@ impl PartyApp {
         let cfg = self.options.clone();
         let _ = save_cfg(&cfg);
 
-        self.cur_page = MenuPage::Home;
+        let tx = self.tx.clone();
+        let router = self.router.clone();
+
+        self.cur_page = MenuPage::Active;
         self.spawn_task(
             "Launching...\n\nDon't press any buttons or move any analog sticks or mice.",
             move || {
                 sleep(std::time::Duration::from_secs_f32(1.5));
 
                 if let Err(err) = setup_profiles(&handler, &instances) {
-                    println!("[partydeck] Error mounting game directories: {}", err);
+                    println!("[partydeck] Error setting up profiles: {}", err);
                     msg("Failed mounting game directories", &format!("{err}"));
                     return;
                 }
-                if handler.is_saved_handler()
-                    && !cfg.disable_mount_gamedirs
-                    && cfg.profile_unique_dirs
-                    && let Err(err) = fuse_overlayfs_mount_gamedirs(&handler, &instances)
-                {
-                    println!("[partydeck] Error mounting game directories: {}", err);
-                    msg("Failed mounting game directories", &format!("{err}"));
-                    return;
-                }
-                if let Err(err) = launch_game(&handler, &dev_infos, &instances, &cfg) {
-                    println!("[partydeck] Error launching instances: {}", err);
-                    msg("Launch Error", &format!("{err}"));
-                }
-                if cfg.enable_kwin_script {
-                    if let Err(err) = kwin_dbus_unload_script() {
-                        println!("[partydeck] Error unloading KWin script: {}", err);
-                        msg("Failed unloading KWin script", &format!("{err}"));
+                match launch_game(&handler, &dev_infos, &instances, &cfg, &router) {
+                    Ok(handles) => {
+                        let _ = tx.send(handles);
                     }
-                }
-                if let Err(err) = remove_guest_profiles() {
-                    println!("[partydeck] Error removing guest profiles: {}", err);
-                    msg("Failed removing guest profiles", &format!("{err}"));
-                }
-                if let Err(err) = clear_tmp() {
-                    println!("[partydeck] Error removing tmp directory: {}", err);
-                    msg("Failed removing tmp directory", &format!("{err}"));
+                    Err(err) => {
+                        println!("[partydeck] Error launching instances: {}", err);
+                        msg("Launch Error", &format!("{err}"));
+                    }
                 }
             },
         );

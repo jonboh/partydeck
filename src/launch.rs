@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -36,8 +37,18 @@ pub fn launch_game(
     input_devices: &[DeviceInfo],
     instances: &Vec<Instance>,
     cfg: &PartyConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let new_cmds = launch_cmds(h, input_devices, instances, cfg)?;
+    router: &InputRouter,
+) -> Result<Vec<std::process::Child>, Box<dyn std::error::Error>> {
+    // Stop any previous routing thread and wait for it to fully exit,
+    // releasing all exclusive device grabs before we start fresh.
+    router.stop_routing();
+    router.slots.lock().unwrap().clear();
+
+    if h.is_saved_handler() && !cfg.disable_mount_gamedirs && cfg.profile_unique_dirs {
+        fuse_overlayfs_mount_gamedirs(h, instances)?;
+    }
+
+    let new_cmds = launch_cmds(h, input_devices, instances, cfg, router)?;
     print_launch_cmds(&new_cmds);
 
     if cfg.enable_kwin_script {
@@ -45,14 +56,11 @@ pub fn launch_game(
             true => "splitscreen_kwin_vertical.js",
             false => "splitscreen_kwin.js",
         };
-
         kwin_dbus_start_script(PATH_RES.join(script))
             .map_err(|e| format!("Failed to start KWin script: {}", e))?;
     }
 
     let hyprland_handle = if cfg.enable_hyprland_windows {
-        // Start the Hyprland daemon before any game processes are spawned so it is
-        // ready to handle the first openwindow event.
         Some(
             hyprland_start(cfg.vertical_two_player)
                 .map_err(|e| format!("Failed to start Hyprland: {}", e))?,
@@ -85,15 +93,19 @@ pub fn launch_game(
         i += 1;
     }
 
-    for mut handle in handles {
-        handle.wait()?;
-    }
+    router.start_routing();
 
+    // Hyprland handle is moved into a detached thread so it can wait for game exit
+    // without blocking the caller (which now returns handles for async tracking).
     if let Some(handle) = hyprland_handle {
-        handle.stop();
+        std::thread::spawn(move || {
+            // Wait a reasonable time then stop; the actual game exit is tracked via PIDs
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+            handle.stop();
+        });
     }
 
-    Ok(())
+    Ok(handles)
 }
 
 pub fn launch_cmds(
@@ -101,6 +113,7 @@ pub fn launch_cmds(
     input_devices: &[DeviceInfo],
     instances: &Vec<Instance>,
     cfg: &PartyConfig,
+    router: &InputRouter,
 ) -> Result<Vec<std::process::Command>, Box<dyn std::error::Error>> {
     let win = h.win();
     let exec = Path::new(&h.exec);
@@ -179,6 +192,8 @@ pub fn launch_cmds(
 
         cmd.env("SDL_JOYSTICK_HIDAPI", "0");
         cmd.env("ENABLE_GAMESCOPE_WSI", "0");
+        // Disable Proton's native HID layer and SDL HIDAPI so games see only our virtual nodes
+        cmd.env("PROTON_DISABLE_HIDRAW", "1");
         if h.sdl2_override != SDL2Override::No {
             let path_sdl = match h.sdl2_override {
                 SDL2Override::Srt => {
@@ -199,6 +214,8 @@ pub fn launch_cmds(
             cmd.env("PROTON_VERB", "run");
             cmd.env("PROTONPATH", protonpath);
             cmd.env("PROTON_DISABLE_HIDRAW", "1");
+            // Force Wine to use its internal xinput wrapper, preventing it from bypassing our virtual nodes
+            cmd.env("WINEDLLOVERRIDES", "xinput1_3=n,b");
             if cfg.proton_wow64 {
                 cmd.env("PROTON_USE_WOW64", "1");
             }
@@ -275,13 +292,39 @@ pub fn launch_cmds(
         cmd.arg("--die-with-parent");
         cmd.args(["--dev-bind", "/", "/"]);
         cmd.args(["--tmpfs", "/tmp"]);
-        // Mask out any gamepads that aren't this player's
-        for (d, dev) in input_devices.iter().enumerate() {
-            if !dev.enabled
-                || (!instance.devices.contains(&d) && dev.device_type == DeviceType::Gamepad)
-            {
-                cmd.args(["--bind", "/dev/null", &dev.path]);
+        // Replace /dev/input with a clean tmpfs; we'll bind-mount only the virtual nodes for this instance
+        cmd.args(["--tmpfs", "/dev/input"]);
+
+        // Create a virtual device per assigned gamepad and bind-mount its nodes into the sandbox
+        let mut assigned_vnodes: Vec<String> = Vec::new();
+        for &device_idx in &instance.devices {
+            let dev_info = &input_devices[device_idx];
+            if dev_info.device_type == DeviceType::Gamepad {
+                match router.add_slot(&dev_info.path) {
+                    Ok(vnodes) => {
+                        for vpath in vnodes {
+                            cmd.args(["--dev-bind", &vpath, &vpath]);
+                            assigned_vnodes.push(vpath);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[partydeck] Failed to create virtual device for {}: {}",
+                            dev_info.path, e
+                        );
+                    }
+                }
             }
+        }
+
+        // Tell SDL exactly which evdev nodes to use, so it can't grab anything else
+        let evdev_nodes: Vec<&str> = assigned_vnodes
+            .iter()
+            .filter(|p| p.contains("event"))
+            .map(|s| s.as_str())
+            .collect();
+        if !evdev_nodes.is_empty() {
+            cmd.env("SDL_EVDEV_DEVICES", evdev_nodes.join(":"));
         }
 
         if cfg.profile_unique_dirs {
@@ -314,6 +357,11 @@ pub fn launch_cmds(
                     &game_subpath.to_string_lossy(),
                 ]);
             }
+        }
+
+        if std::env::var("APPIMAGE").is_ok() {
+            // Unset the AppImage-injected VK_DRIVER_FILES so games use the real system Vulkan driver
+            cmd.args(["--unsetenv", "VK_DRIVER_FILES"]);
         }
 
         if h.use_goldberg {
@@ -459,36 +507,33 @@ pub fn fuse_overlayfs_mount_gamedirs(
 
     let gamename = h.handler_dir_name().to_string();
 
-    let mut cmds: Vec<Command> = (0..instances.len())
-        .map(|_| Command::new("fuse-overlayfs"))
-        .collect();
-
     for (i, instance) in instances.iter().enumerate() {
-        let cmd = &mut cmds[i];
-
         let path_game_mnt = tmp_dir.join(format!("game-{}", i));
         let path_workdir = tmp_dir.join(format!("work-{}", i));
         let path_prof = PATH_PARTY.join("profiles").join(&instance.profname);
         let path_upperdir = path_prof.join("gamesaves").join(&gamename);
 
-        std::fs::create_dir_all(&path_game_mnt)?;
-        std::fs::create_dir_all(&path_workdir)?;
+        fs::create_dir_all(&path_game_mnt)?;
+        // Unmount any stale overlay from a previous crashed run before re-mounting
+        let _ = Command::new("fusermount3")
+            .args(["-u", "-z", &path_game_mnt.to_string_lossy()])
+            .status();
+        fs::create_dir_all(&path_workdir)?;
+        fs::create_dir_all(&path_upperdir)?;
 
-        cmd.arg("-o");
-        cmd.arg(format!("lowerdir={}", path_lowerdir));
-        cmd.arg("-o");
-        cmd.arg(format!("upperdir={}", path_upperdir.display()));
-        cmd.arg("-o");
-        cmd.arg(format!("workdir={}", path_workdir.display()));
-        cmd.arg(&path_game_mnt);
-    }
-
-    for cmd in &mut cmds {
-        let status = cmd
+        let status = Command::new("fuse-overlayfs")
+            .arg("-o")
+            .arg(format!(
+                "lowerdir={},upperdir={},workdir={}",
+                path_lowerdir,
+                path_upperdir.display(),
+                path_workdir.display()
+            ))
+            .arg(&path_game_mnt)
             .status()
-            .map_err(|_| "Fuse-overlayfs executable not found; Please install fuse-overlayfs through your distro's package manager. If you already have it installed (or are on SteamOS, where it should be pre-installed), open up an issue on the GitHub.")?;
+            .map_err(|_| "fuse-overlayfs executable not found; please install fuse-overlayfs through your distro's package manager. If you already have it installed (or are on SteamOS, where it should be pre-installed), open up an issue on the GitHub.")?;
         if !status.success() {
-            return Err("fuse-overlayfs mount failed.".into());
+            return Err(format!("fuse-overlayfs mount failed for instance {}.", i).into());
         }
     }
 

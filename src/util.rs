@@ -163,16 +163,13 @@ pub fn fuse_overlayfs_unmount_gamedirs() -> Result<(), Box<dyn std::error::Error
         if let Ok(entry) = entry_result
             && entry.path().is_dir()
             && entry.file_name().to_string_lossy().starts_with("game-")
-            && is_mount_point(&entry.path())?
+            && is_mount_point(&entry.path()).unwrap_or(false)
         {
-            let status = Command::new("umount")
-                .arg("-l")
-                .arg("-v")
+            let _ = Command::new("fusermount3")
+                .arg("-u")
+                .arg("-z")
                 .arg(entry.path())
-                .status()?;
-            if !status.success() {
-                return Err(format!("Unmounting {} failed", entry.path().to_string_lossy()).into());
-            }
+                .status();
         }
     }
 
