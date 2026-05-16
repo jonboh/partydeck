@@ -4,6 +4,7 @@ use evdev::uinput::VirtualDevice;
 use evdev::*;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
+use std::collections::{HashMap, HashSet};
 use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -203,10 +204,9 @@ pub struct RouterSlot {
 }
 
 pub struct InputRouter {
-    pub slots: Arc<Mutex<Vec<RouterSlot>>>,
+    slots: Arc<Mutex<Vec<RouterSlot>>>,
     waker: Arc<Mutex<Option<Arc<Waker>>>>,
     thread_handle: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
-    // REVIEW: 3 mutex, possible deadlock?
 }
 
 impl Clone for InputRouter {
@@ -240,6 +240,29 @@ impl InputRouter {
         }
     }
 
+    /// Clear all virtual device slots (e.g. between sessions).
+    pub fn clear_slots(&self) {
+        self.slots.lock().unwrap().clear();
+    }
+
+    /// Return a snapshot of each slot's physical device path.
+    /// The index in the returned Vec corresponds to the slot index.
+    pub fn slot_physical_paths(&self) -> Vec<Option<String>> {
+        self.slots
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.physical_path.clone())
+            .collect()
+    }
+
+    /// Update the physical device path for a single slot.
+    pub fn set_slot_physical_path(&self, idx: usize, path: Option<String>) {
+        if let Some(slot) = self.slots.lock().unwrap().get_mut(idx) {
+            slot.physical_path = path;
+        }
+    }
+
     pub fn start_routing(&self) {
         let slots = self.slots.clone();
         let waker_slot = self.waker.clone();
@@ -265,25 +288,19 @@ impl InputRouter {
             // Publish the Waker so stop_routing() can reach it.
             *waker_slot.lock().unwrap() = Some(waker.clone());
 
-            let mut physical_devices: std::collections::HashMap<String, Device> =
-                std::collections::HashMap::new();
+            let mut physical_devices: HashMap<String, Device> = HashMap::new();
             // Maps mio Token → physical device path
-            let mut token_to_path: std::collections::HashMap<Token, String> =
-                std::collections::HashMap::new();
+            let mut token_to_path: HashMap<Token, String> = HashMap::new();
             let mut next_token = 0usize;
             // Paths that disconnected and are awaiting reconnection
-            let mut pending_reconnect: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
+            let mut pending_reconnect: HashSet<String> = HashSet::new();
 
             // Helper: open, grab, and register a single device path.
             // Returns true on success.
             let register_device = |path: &str,
                                    poll: &mut Poll,
-                                   physical_devices: &mut std::collections::HashMap<
-                String,
-                Device,
-            >,
-                                   token_to_path: &mut std::collections::HashMap<Token, String>,
+                                   physical_devices: &mut HashMap<String, Device>,
+                                   token_to_path: &mut HashMap<Token, String>,
                                    next_token: &mut usize|
              -> bool {
                 match Device::open(path) {

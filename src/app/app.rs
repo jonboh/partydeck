@@ -258,7 +258,7 @@ impl PartyApp {
         // Stop the routing thread and release all exclusive device grabs so
         // controllers become usable again for the next session.
         self.router.stop_routing();
-        self.router.slots.lock().unwrap().clear();
+        self.router.clear_slots();
 
         if self.options.enable_kwin_script {
             if let Err(err) = kwin_dbus_unload_script() {

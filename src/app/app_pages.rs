@@ -507,27 +507,40 @@ impl PartyApp {
             if ui.button("Scan for Controllers").clicked() {
                 self.input_devices = scan_input_devices(&self.options.pad_filter_type);
             }
-            ui.label(format!("Running processes: {}", self.running_processes.len()));
+            ui.label(format!(
+                "Running processes: {}",
+                self.running_processes.len()
+            ));
         });
 
         ui.separator();
 
-        let mut slots = self.router.slots.lock().unwrap();
+        let slot_paths = self.router.slot_physical_paths();
 
-        if slots.is_empty() {
+        if slot_paths.is_empty() {
             ui.label("No virtual controller slots active (did the instances use gamepads?).");
         }
 
-        for (i, slot) in slots.iter_mut().enumerate() {
+        for (i, physical_path) in slot_paths.iter().enumerate() {
+            let mut new_path = physical_path.clone();
+
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Instance {} Controller:", i + 1)).strong());
 
-                    let combo_label = if let Some(path) = &slot.physical_path {
+                    let combo_label = if let Some(path) = physical_path {
                         if let Some(device) = self.input_devices.iter().find(|d| d.path() == path) {
-                            format!("{} {} ({})", device.emoji(), device.fancyname(), path.trim_start_matches("/dev/input/"))
+                            format!(
+                                "{} {} ({})",
+                                device.emoji(),
+                                device.fancyname(),
+                                path.trim_start_matches("/dev/input/")
+                            )
                         } else {
-                            format!("⚠ Disconnected ({})", path.trim_start_matches("/dev/input/"))
+                            format!(
+                                "⚠ Disconnected ({})",
+                                path.trim_start_matches("/dev/input/")
+                            )
                         }
                     } else {
                         "Not Assigned".to_string()
@@ -537,31 +550,44 @@ impl PartyApp {
                         .selected_text(combo_label)
                         .width(300.0)
                         .show_ui(ui, |ui| {
-                            if ui.selectable_label(slot.physical_path.is_none(), "None (Disconnect)").clicked() {
-                                slot.physical_path = None;
+                            if ui
+                                .selectable_label(physical_path.is_none(), "None (Disconnect)")
+                                .clicked()
+                            {
+                                new_path = None;
                             }
                             ui.separator();
                             for dev in self.input_devices.iter() {
                                 if dev.device_type() != DeviceType::Gamepad {
                                     continue;
                                 }
-                                let is_selected = slot.physical_path.as_deref() == Some(dev.path());
-                                let label = format!("{} {} ({})", dev.emoji(), dev.fancyname(), dev.path().trim_start_matches("/dev/input/"));
+                                let is_selected = physical_path.as_deref() == Some(dev.path());
+                                let label = format!(
+                                    "{} {} ({})",
+                                    dev.emoji(),
+                                    dev.fancyname(),
+                                    dev.path().trim_start_matches("/dev/input/")
+                                );
                                 if ui.selectable_label(is_selected, label).clicked() {
-                                    slot.physical_path = Some(dev.path().to_string());
+                                    new_path = Some(dev.path().to_string());
                                 }
                             }
                         });
                 });
             });
-        }
 
-        drop(slots);
+            if new_path != *physical_path {
+                self.router.set_slot_physical_path(i, new_path);
+            }
+        }
 
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Stop All Games").clicked() {
-                    if yesno("Stop Games?", "Are you sure you want to kill all running game processes?") {
+                    if yesno(
+                        "Stop Games?",
+                        "Are you sure you want to kill all running game processes?",
+                    ) {
                         for &pid in &self.running_processes {
                             let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
                         }

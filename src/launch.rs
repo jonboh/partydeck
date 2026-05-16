@@ -42,7 +42,7 @@ pub fn launch_game(
     // Stop any previous routing thread and wait for it to fully exit,
     // releasing all exclusive device grabs before we start fresh.
     router.stop_routing();
-    router.slots.lock().unwrap().clear();
+    router.clear_slots();
 
     if h.is_saved_handler() && !cfg.disable_mount_gamedirs && cfg.profile_unique_dirs {
         fuse_overlayfs_mount_gamedirs(h, instances)?;
