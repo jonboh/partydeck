@@ -52,6 +52,8 @@ pub struct PartyConfig {
     pub check_for_updates: bool,
     #[serde(default)]
     pub default_profiles: Vec<String>,
+    #[serde(default)]
+    pub default_monitors: Vec<usize>,
 }
 
 impl Default for PartyConfig {
@@ -73,6 +75,7 @@ impl Default for PartyConfig {
             disable_mount_gamedirs: false,
             check_for_updates: true,
             default_profiles: Vec::new(),
+            default_monitors: Vec::new(),
         }
     }
 }

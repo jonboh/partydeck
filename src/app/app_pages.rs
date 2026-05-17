@@ -727,6 +727,46 @@ impl PartyApp {
             }
         }
 
+        if self.options.gamescope_sdl_backend && self.monitors.len() > 1 {
+            ui.add_space(4.0);
+            ui.label("Default monitors (assigned in order when controllers join):");
+            ui.horizontal_wrapped(|ui| {
+                let mut to_remove: Option<usize> = None;
+                for (idx, &mon_idx) in self.options.default_monitors.iter().enumerate() {
+                    ui.label(format!("P{}:", idx + 1));
+                    let display_name = self
+                        .monitors
+                        .get(mon_idx)
+                        .map(|m| m.name().to_string())
+                        .unwrap_or_else(|| format!("Display {}", mon_idx + 1));
+                    if ui
+                        .button(&display_name)
+                        .on_hover_text("Click to remove")
+                        .clicked()
+                    {
+                        to_remove = Some(idx);
+                    }
+                }
+                if let Some(idx) = to_remove {
+                    self.options.default_monitors.remove(idx);
+                }
+                egui::ComboBox::from_id_salt("add_default_monitor")
+                    .selected_text("+ Add")
+                    .show_ui(ui, |ui| {
+                        for (mon_idx, monitor) in self.monitors.iter().enumerate() {
+                            if ui.selectable_label(false, monitor.name()).clicked() {
+                                self.options.default_monitors.push(mon_idx);
+                            }
+                        }
+                    });
+            });
+            if !self.options.default_monitors.is_empty() {
+                if ui.small_button("Clear monitor defaults").clicked() {
+                    self.options.default_monitors.clear();
+                }
+            }
+        }
+
         ui.separator();
 
         if ui.button("Open PartyDeck Data Folder").clicked() {

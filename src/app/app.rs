@@ -385,11 +385,18 @@ impl PartyApp {
                                 .get(inst_idx)
                                 .and_then(|name| self.profiles.iter().position(|p| p == name))
                                 .unwrap_or(0);
+                            let monitor = self
+                                .options
+                                .default_monitors
+                                .get(inst_idx)
+                                .copied()
+                                .map(|m| m.min(self.monitors.len().saturating_sub(1)))
+                                .unwrap_or(0);
                             self.instances.push(Instance {
                                 devices: vec![i],
                                 profname: String::new(),
                                 profselection,
-                                monitor: 0,
+                                monitor,
                                 width: 0,
                                 height: 0,
                             });

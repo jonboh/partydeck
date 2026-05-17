@@ -62,8 +62,11 @@ pub fn launch_game(
 
     let hyprland_handle = if cfg.enable_hyprland_windows {
         Some(
-            hyprland_start(cfg.vertical_two_player)
-                .map_err(|e| format!("Failed to start Hyprland: {}", e))?,
+            hyprland_start(
+                cfg.vertical_two_player,
+                instances.iter().map(|i| i.monitor).collect(),
+            )
+            .map_err(|e| format!("Failed to start Hyprland: {}", e))?,
         )
     } else {
         None

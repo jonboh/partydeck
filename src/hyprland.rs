@@ -2,8 +2,8 @@ use std::error::Error;
 use std::io::BufRead;
 use std::os::unix::net::UnixStream;
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Handle for the thread that performs the hyprland window management (size,
 /// position, decorations).
@@ -37,7 +37,13 @@ impl Drop for HyprlandManager {
     }
 }
 
-pub fn hyprland_start(vertical: bool) -> Result<HyprlandManager, Box<dyn Error>> {
+/// `instance_monitors` is the list of SDL display indices (one per instance,
+/// in launch order) so that each gamescope window can be moved to its intended
+/// Hyprland monitor as it opens.
+pub fn hyprland_start(
+    vertical: bool,
+    instance_monitors: Vec<usize>,
+) -> Result<HyprlandManager, Box<dyn Error>> {
     // Resolve socket path from environment variables.
     let xdg = std::env::var("XDG_RUNTIME_DIR").map_err(|_| "XDG_RUNTIME_DIR is not set")?;
     let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
@@ -50,7 +56,7 @@ pub fn hyprland_start(vertical: bool) -> Result<HyprlandManager, Box<dyn Error>>
     let stop_flag_thread = Arc::clone(&stop_flag);
 
     let thread = std::thread::spawn(move || {
-        event_loop(&socket_path, vertical, stop_flag_thread);
+        event_loop(&socket_path, vertical, instance_monitors, stop_flag_thread);
     });
 
     Ok(HyprlandManager {
@@ -91,7 +97,12 @@ fn apply_decoration_rules() {
     }
 }
 
-fn event_loop(socket_path: &str, vertical: bool, stop: Arc<AtomicBool>) {
+fn event_loop(
+    socket_path: &str,
+    vertical: bool,
+    instance_monitors: Vec<usize>,
+    stop: Arc<AtomicBool>,
+) {
     let stream = match UnixStream::connect(socket_path) {
         Ok(s) => {
             println!(
@@ -109,6 +120,10 @@ fn event_loop(socket_path: &str, vertical: bool, stop: Arc<AtomicBool>) {
         }
     };
 
+    // Counter for gamescope windows seen so far; used to map each new window
+    // to the corresponding instance's target monitor in launch order.
+    let mut gamescope_count: usize = 0;
+
     let reader = std::io::BufReader::new(stream);
     for line in reader.lines() {
         if stop.load(Ordering::Relaxed) {
@@ -121,16 +136,84 @@ fn event_loop(socket_path: &str, vertical: bool, stop: Arc<AtomicBool>) {
 
         // Events look like: openwindow>>addr,workspace,class,title
         if let Some(rest) = line.strip_prefix("openwindow>>") {
-            let addr = rest.split(',').next().unwrap_or("").to_string();
-            println!("[partydeck] hyprland::event_loop: openwindow addr={}", addr);
+            let parts: Vec<&str> = rest.splitn(4, ',').collect();
+            // The openwindow event gives the address without a leading "0x",
+            // but hyprctl's address: selector requires it.
+            let raw_addr = parts.first().copied().unwrap_or("");
+            let addr = if raw_addr.starts_with("0x") {
+                raw_addr.to_string()
+            } else {
+                format!("0x{}", raw_addr)
+            };
+            let class = parts.get(2).copied().unwrap_or("");
+
+            // Only react to gamescope windows; ignore all other openwindow events.
+            let is_gamescope =
+                class == "gamescope" || class == "gamescope-kbm" || class.starts_with(".gamescope");
+            if !is_gamescope {
+                continue;
+            }
+
+            println!(
+                "[partydeck] hyprland::event_loop: openwindow gamescope addr={} class={}",
+                addr, class
+            );
+
+            // Move this window to its intended Hyprland monitor before tiling.
+            if let Some(&sdl_idx) = instance_monitors.get(gamescope_count) {
+                move_window_to_sdl_monitor(&addr, sdl_idx);
+            }
+            gamescope_count += 1;
+
             // Small delay to allow Hyprland to finish placing the window in its
-            // tiling layout before we override the geometry.
+            // tiling layout (and complete the monitor move) before we override
+            // the geometry.
             std::thread::sleep(std::time::Duration::from_millis(300));
             apply_splitscreen(vertical);
         }
     }
 
     println!("[partydeck] hyprland::event_loop: exiting");
+}
+
+/// Move a window (identified by `addr`) to the active workspace of the
+/// Hyprland monitor that corresponds to `sdl_index` in SDL display order.
+fn move_window_to_sdl_monitor(addr: &str, sdl_index: usize) {
+    let hypr_monitors = get_hypr_monitors();
+    let sdl_monitors = crate::monitor::get_monitors_errorless();
+
+    let sdl_name = match sdl_monitors.get(sdl_index) {
+        Some(m) => m.name().to_string(),
+        None => {
+            println!(
+                "[partydeck] hyprland::move_window_to_sdl_monitor: SDL monitor index {} out of range",
+                sdl_index
+            );
+            return;
+        }
+    };
+
+    let hypr_mon = match hypr_monitors.iter().find(|m| m.name == sdl_name) {
+        Some(m) => m,
+        None => {
+            println!(
+                "[partydeck] hyprland::move_window_to_sdl_monitor: no Hyprland monitor named '{}' (sdl_index={})",
+                sdl_name, sdl_index
+            );
+            return;
+        }
+    };
+
+    // movetoworkspacesilent keeps the workspace invisible (no viewport jump)
+    // and supports the address: window selector.
+    let arg = format!("{},address:{}", hypr_mon.active_workspace_id, addr);
+    println!(
+        "[partydeck] hyprland::move_window_to_sdl_monitor: {} -> monitor '{}' workspace {}",
+        addr, hypr_mon.name, hypr_mon.active_workspace_id
+    );
+    let _ = Command::new("hyprctl")
+        .args(["dispatch", "movetoworkspacesilent", &arg])
+        .status();
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -158,6 +241,16 @@ struct WindowRect {
     height: i64,
 }
 
+/// Rich monitor description as returned by `hyprctl -j monitors`.
+#[derive(Debug, Clone)]
+struct HyprMonitor {
+    id: MonitorId,
+    name: String,
+    rect: MonitorRect,
+    /// ID of the workspace currently displayed on this monitor.
+    active_workspace_id: i64,
+}
+
 impl MonitorRect {
     /// Compute the window rectangle for a given player slot using fractional
     /// layout tables. `xf`, `yf`, `wf`, `hf` are slices of fractions for the
@@ -172,32 +265,46 @@ impl MonitorRect {
     }
 }
 
-fn get_monitors() -> std::collections::HashMap<MonitorId, MonitorRect> {
-    let mut monitors = std::collections::HashMap::new();
+/// Returns all Hyprland monitors with their geometry and active workspace.
+fn get_hypr_monitors() -> Vec<HyprMonitor> {
     let out = match Command::new("hyprctl").args(["-j", "monitors"]).output() {
         Ok(o) => o.stdout,
         Err(e) => {
-            println!("[partydeck] hyprland::get_monitors: hyprctl failed: {}", e);
-            return monitors;
+            println!(
+                "[partydeck] hyprland::get_hypr_monitors: hyprctl failed: {}",
+                e
+            );
+            return vec![];
         }
     };
     let json: serde_json::Value = match serde_json::from_slice(&out) {
         Ok(v) => v,
         Err(e) => {
-            println!("[partydeck] hyprland::get_monitors: parse failed: {}", e);
-            return monitors;
+            println!(
+                "[partydeck] hyprland::get_hypr_monitors: parse failed: {}",
+                e
+            );
+            return vec![];
         }
     };
+    let mut monitors = vec![];
     if let Some(arr) = json.as_array() {
         for m in arr {
             let id = MonitorId(m["id"].as_i64().unwrap_or(0));
+            let name = m["name"].as_str().unwrap_or("").to_string();
             let rect = MonitorRect {
                 x: m["x"].as_i64().unwrap_or(0),
                 y: m["y"].as_i64().unwrap_or(0),
                 width: m["width"].as_i64().unwrap_or(1920),
                 height: m["height"].as_i64().unwrap_or(1080),
             };
-            monitors.insert(id, rect);
+            let active_workspace_id = m["activeWorkspace"]["id"].as_i64().unwrap_or(1);
+            monitors.push(HyprMonitor {
+                id,
+                name,
+                rect,
+                active_workspace_id,
+            });
         }
     }
     monitors
@@ -235,7 +342,19 @@ fn get_gamescope_by_monitor() -> std::collections::HashMap<MonitorId, Vec<String
                 continue;
             }
             let addr = window_entry["address"].as_str().unwrap_or("").to_string();
-            let mon = MonitorId(window_entry["monitor"].as_i64().unwrap_or(0));
+            let mon_raw = window_entry["monitor"].as_i64().unwrap_or(-1);
+            // Hyprland reports -1 for windows on workspaces not currently
+            // assigned to any monitor (e.g. during startup).  Skip them — they
+            // are not ready to be positioned yet and calling apply_splitscreen
+            // for them would place them at wrong coordinates.
+            if mon_raw < 0 {
+                println!(
+                    "[partydeck] hyprland::get_gamescope_by_monitor: skipping {} (monitor=-1, not yet mapped)",
+                    addr
+                );
+                continue;
+            }
+            let mon = MonitorId(mon_raw);
             by_monitor.entry(mon).or_default().push(addr);
         }
     }
@@ -335,7 +454,10 @@ fn apply_splitscreen(vertical: bool) {
         horizontal_layout()
     };
 
-    let monitors = get_monitors();
+    let hypr_monitors = get_hypr_monitors();
+    let monitor_map: std::collections::HashMap<MonitorId, MonitorRect> =
+        hypr_monitors.iter().map(|m| (m.id, m.rect)).collect();
+
     let gamescope_by_monitor = get_gamescope_by_monitor();
 
     if gamescope_by_monitor.is_empty() {
@@ -352,7 +474,7 @@ fn apply_splitscreen(vertical: bool) {
             );
             continue;
         };
-        let rect = monitors.get(monitor_id).copied().unwrap_or(MonitorRect {
+        let rect = monitor_map.get(monitor_id).copied().unwrap_or(MonitorRect {
             x: 0,
             y: 0,
             width: 1920,
